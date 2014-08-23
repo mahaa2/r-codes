@@ -1,0 +1,53 @@
+ ###############################################################
+ ## Source files
+ ## put here the directory of the file hmc.txt in your computer
+ ## also for basic function files
+ ##############################################################
+ source("hmc.txt")
+ source("basicfunctions.txt")
+
+ #########################################################
+ ## unnormalized log-posterior function 
+ ## gradient vector (mu delta xi)' = x = (x[1] x[2] x[3])
+ ## independent normal priors ~ N[0, 100]
+ #########################################################
+
+ #########################
+ ### log-posterior for GEV
+ #########################
+ ll <- function(theta, x) {
+       mu    = theta[1]
+       delta = theta[2]
+       xi    = theta[3]
+
+ ll <- sum(log(f(x, mu, exp(delta), xi))) + sum(dnorm(theta, mean = 0, sd = 5, log = T))
+ ifelse(ll != "-Inf", ll, -10^5)
+ }
+
+ ##################################
+ ### gradient log-posterior for GEV
+ ##################################
+ nll <- function(theta, x) {
+        D <- rep(0, 3)
+        mu    = theta[1]
+        delta = theta[2]
+        xi    = theta[3]
+        n     = length(x)
+
+	sig = exp(delta)
+        d   = x - mu
+        z   = 1 + xi*d/sig
+        w   = d/sig^2
+        q   = d/sig
+ 
+        D[1] = 1/sig*sum(z^(-1)*((1+xi) - z^(-1/xi))) - mu/25
+        D[2] = (sum((1+xi)*w*z^(-1) - w*z^(-1-1/xi))*sig - n) - delta/25
+        D[3] = suppressWarnings(1/xi^(2)*sum(log(z)) - (1/xi+1)*sum(q*z^(-1)) + 
+		  		1/xi*sum(q*z^(-1-1/xi)) - 1/xi^(2)*sum(log(z)*z^(-1/xi)) - xi/25)
+
+   if (suppressWarnings(any(z < 0 | D == "NaN" | D == "Inf" | D == "-Inf"))) rep(-10^5, 3)
+  else D
+ }
+
+ ## Generating values 
+ B = hmc(c(0, 5, 0.0001), 1100, 100, .01, 15, y) 
