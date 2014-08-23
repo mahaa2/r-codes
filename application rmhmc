@@ -1,0 +1,322 @@
+####################################################################
+### bayesian nonparametrics for extreme value time series prediction
+### using extreme value distribution for maxima
+####################################################################
+
+##################################
+### loading packages and libraries
+##################################
+require(compiler) # speed up R
+enableJIT(3)
+require(coda)
+require(mvtnorm)
+require(ismev)
+library(ismev)
+data(venice)
+y = venice[(1:51), 2]; my = mean(y); y = (y - my)/100
+
+#pdf('veneza', width = 7, height = 5) 
+#plot(venice[(1:51), 2]/100, type = 'l', xlab = 't', ylab = 'Nível da Mar [m]', main = "") # [cm]
+#dev.off()
+
+###############################################################
+### Covariance function squared exponential and its derivatives
+### K(t, t*) = phi1*exp(-(t - t*)^2/phi2)
+### x = (exp(x[1]) exp(x[2]))' = (phi1 phi2)'
+### nabK derivatire w.r.t x[1] and x[2]
+### using parameterization on the real line
+###############################################################
+
+#####################
+### Euler Constant
+#####################
+ J <- -digamma(1)
+
+#####################
+### Matrix (t-t*)^2
+#####################
+ T = length(y)
+ D = T+3
+ t = seq(1, T)
+ A = outer(t, t, '-')^2
+
+##########################
+### Covariance function
+##########################
+ K <- function(theta2, A) {
+      phi1 = exp(theta2[1])
+      phi2 = exp(theta2[2])
+
+      K = phi1*exp(-A/phi2) 
+ return(K)
+ }
+
+#########################################################
+### first and second derivatives of covariance function
+#########################################################
+ nabK. <- function(theta2, A) {
+         nab  = list()
+         K    = K(theta2, A)
+         phi1 = exp(theta2[1])
+         phi2 = exp(theta2[2]) 
+ 
+         nab[[1]] = K ##d2k1 = dk1
+         nab[[2]] = A/phi2 * K ## dk2 = dk2k1
+ return(nab)
+ }
+
+ nabK <- function(theta2, A) {
+         nab  = list()
+         K    = K(theta2, A)
+         phi1 = exp(theta2[1])
+         phi2 = exp(theta2[2])
+
+         nab[[1]] = K ##d2k1 = dk1
+         nab[[2]] = A/phi2 * K ## dk2 = dk2k1
+         nab[[3]] = (-1 + A/phi2) * A * K/phi2 ## d2k2
+ return(nab)
+ }
+
+##############################
+### Gumbel type I (MAX) pdf
+##############################
+ dp <- function(x, mu, sigma) {
+       z = (x-mu)/sigma
+       d = exp(-z-exp(-z))/sigma
+  return(d)
+ }
+
+########################################################################
+### inverse gamma density for delta1 = log sig using jacobian method
+######################################################################## 
+ digam <- function(x, a, b) {
+          b^a / gamma(a) * exp(-x*a - b/exp(x))        
+ }
+
+##################################
+### Trace of product of matrices
+##################################
+ tr <- function(A, B) {
+       S = 0
+       for (i in 1:dim(A)[1]) S = S + A[i,] %*% B[,i]
+ return(as.numeric(S))
+ }
+
+############################################################################
+### mean vector and covariance matrix of hyperparameters prior distributions
+############################################################################
+ a = c(.1, .1, 3.3) # 1.5, 0.6, 3.8, 28.5  # 2, 40 # 4 , 35
+ b = c(.1, .1, 1)  # 15, 20    
+ # curve(digam(x, a[3], b[3]), -7, 7)
+
+#########################################################
+### metric tensor G(theta)
+### theta = (f, sigma, phi1, phi2)'
+###       = (f, exp(delta1), exp(delta2), exp(delta3))'
+### parameterization on the real line
+#########################################################
+ G <- function(theta, A) {
+      G      = matrix(0, D, D)
+      f      = theta[1:T]
+      sig    = exp(theta[T+1])
+      theta2 = c(theta[T+2], theta[T+3])
+
+      nabK  = nabK.(theta2, A)
+      K     = nabK[[1]] ## dk2 = d2k2 
+      invK  = chol2inv(chol(K))
+      iKdK3 = invK%*%nabK[[2]]
+
+      G[1:T, 1:T] = diag(T)/sig^2 + invK
+      G[1:T, T+1] = G[T+1, 1:T] = (J - 1)/sig
+      G[T+1, T+1] = T*((pi^2)/6 + (1-J)^2) + b[1]/exp(theta[T+1])
+      G[T+2, T+2] = .5*T + b[2]/exp(theta[T+2])
+      G[T+3, T+3] = .5*tr(iKdK3, iKdK3) + b[3]/exp(theta[T+3])
+      G[T+3, T+2] = G[T+2, T+3] = .5*sum(diag(iKdK3))	
+
+ return(G)
+ }
+
+###################################################
+### algorithm
+### riemaniann manifold hamiltonian monte carlo
+### with genelarized leapfrog steps
+####################################################
+
+ rmhmc <- function(theta.current, SS, epsilon, LF, nfps, y, A) {
+
+	ratio = 0
+
+	## preallocate matrix for the chain
+	D          = length(theta.current)
+	theta      = matrix(, SS, D)
+	theta[1, ] = theta.current
+	start.time = Sys.time()
+	
+	## generating chain
+	for(i in 2:SS) {
+
+	 ## current parameters
+	 thetan = theta[i-1, ]
+
+	 ## updating current parameters
+	 f      = thetan[1:T]
+	 sig    = exp(thetan[T+1])
+	 theta2 = c(thetan[T+2], thetan[T+3])
+
+   ## creating covariance function
+   nabK  = nabK(theta2, A)
+   K     = nabK[[1]] ## K = dk2 = d2k2 
+   invK  = chol2inv(chol(K))
+   iKdK3 = invK%*%nabK[[2]]
+
+   ## creating metric tensor G(.)
+   G. = dG1 = dG2 = dG3 = matrix(0, D, D)
+   G.[1:T, 1:T] = diag(T)/sig^2 + invK
+   G.[1:T, T+1] = G.[T+1, 1:T] = (J - 1)/sig
+   G.[T+1, T+1] = T*((pi^2)/6 + (1-J)^2) + b[1]/exp(thetan[T+1])
+	 G.[T+2, T+2] = .5*T + b[2]/exp(thetan[T+2])
+   G.[T+3, T+3] = .5*tr(iKdK3, iKdK3) + b[3]/exp(thetan[T+3])
+   G.[T+3, T+2] = G.[T+2, T+3] = .5*sum(diag(iKdK3))
+
+	 ## derivatives of metric tensor 
+   diag(dG1[1:T, 1:T]) = -2/sig^2 
+   dG1[1:T, T+1]       = dG1[T+1, 1:T] = -(J - 1)/sig
+	 dG1[T+1, T+1]       = -b[1]/exp(thetan[T+1])
+   dG2[T+2, T+2]       = -b[2]/exp(thetan[T+2])
+   dG3[T+3, T+2]       = dG3[T+2, T+3] = -.5*tr(iKdK3, iKdK3) + .5*tr(invK, nabK[[3]])
+   dG3[T+3, T+3]       = -tr(iKdK3%*%iKdK3, iKdK3) + tr(invK%*%nabK[[3]], iKdK3) -b[3]/exp(thetan[T+3])
+
+	 C  = chol(G.)
+         IG = chol2inv(C)
+	 pl = t(C)%*%rnorm(D, 0 ,1)
+	 pn = pl
+
+	 ## unnormalized log-posterior
+	 lp = sum(log(dp(y, f, sig))) + dmvnorm(f, rep(0, T), K, log = TRUE) + sum(log(digam(thetan[(T+1):(T+3)], a, b))) 
+               
+	     
+	 ## nabla unnormalized log-posterior and hamiltonian derivative w.r.t theta
+	 z    = (y-f)/sig
+	 expz = exp(-z)
+	 R.   = f%*%t(f)%*%invK - diag(T)
+	 R    = invK%*%(R.)
+
+  nlp      = rep(0, D)
+  nlp[1:T] = (rep(1, T) - expz)/sig - as.vector(invK%*%f)
+  nlp[T+1] = -T + sum(z) - sum(z*expz) - a[1] + b[1]/exp(thetan[T+1]) 
+  nlp[T+2] = .5*sum(diag(R.)) - a[2] + b[2]/exp(thetan[T+2]) 
+  nlp[T+3] = .5*tr(R, nabK[[2]]) - a[3] + b[3]/exp(thetan[T+3]) 
+
+   ## terms that dont change when updating momentum
+   c1 = .5*tr(IG, dG1)
+	 c2 = .5*tr(IG, dG2)
+	 c3 = .5*tr(IG, dG3)
+   r1 = IG%*%dG1%*%IG
+	 r2 = IG%*%dG2%*%IG
+   r3 = IG%*%dG3%*%IG
+	 
+	 ## current hamiltonian
+	 H.current = - lp + (D/2)*log(2*pi) + .5*2*sum(log(diag(C))) + .5*as.numeric(t(pn)%*%IG%*%pn)
+
+	 N = LF # sample(LF:LF, 1)
+	 ## generalized leapfrog steps
+	 for (l in 1:N) {
+
+	      ## < updating momentum with number of fixed point steps >
+	      ph <- pn
+	      for(k in 1:nfps) {	
+	      ph <- pn - epsilon/2 * (-nlp + c(rep(0, T), c1 -.5*as.numeric(t(ph)%*%r1%*%ph), 
+                                c2 -.5*as.numeric(t(ph)%*%r2%*%ph), c3 -.5*as.numeric(t(ph)%*%r3%*%ph)) )
+	      }
+	      pn <- ph
+
+	      ## < updating parameters with number of fixed point steps >
+	      thetah <- thetan
+	      for(k in 1:nfps) {
+	      thetah <- thetan + epsilon/2 * ( IG + chol2inv(chol(G(thetah, A))) )%*%pn 
+	      }
+	      thetan <- thetah
+
+	      ## updating proposed parameters
+ 	      f      = thetan[1:T]
+	      sig    = exp(thetan[T+1])
+	      theta2 = c(thetan[T+2], thetan[T+3])
+
+	      ## updating covariance function
+	      nabK  = nabK(theta2, A)
+        K     = nabK[[1]] ## K = dk2 = d2k2 
+        invK  = chol2inv(chol(K))
+        iKdK3 = invK%*%nabK[[2]]
+
+        ## updating metric tensor G(.)
+        G. = dG1 = dG2 = dG3 = matrix(0, D, D)
+        G.[1:T, 1:T] = diag(T)/sig^2 + invK
+        G.[1:T, T+1] = G.[T+1, 1:T] = (J - 1)/sig
+        G.[T+1, T+1] = T*((pi^2)/6 + (1-J)^2) + b[1]/exp(thetan[T+1])
+	      G.[T+2, T+2] = .5*T + b[2]/exp(thetan[T+2])
+        G.[T+3, T+3] = .5*tr(iKdK3, iKdK3) + b[3]/exp(thetan[T+3])
+        G.[T+3, T+2] = G.[T+2, T+3] = .5*sum(diag(iKdK3))
+
+        ## updating derivative of metric tensor
+        diag(dG1[1:T, 1:T]) = -2/sig^2 
+        dG1[1:T, T+1]       = dG1[T+1, 1:T] = -(J - 1)/sig
+	      dG1[T+1, T+1]       = -b[1]/exp(thetan[T+1])
+        dG2[T+2, T+2]       = -b[2]/exp(thetan[T+2])
+        dG3[T+3, T+2]       = dG3[T+2, T+3] = -.5*tr(iKdK3, iKdK3) + .5*tr(invK, nabK[[3]])
+        dG3[T+3, T+3]       = -tr(iKdK3%*%iKdK3, iKdK3) + tr(invK%*%nabK[[3]], iKdK3) -b[3]/exp(thetan[T+3])
+	   
+        C  = chol(G.)
+	      IG = chol2inv(C)
+
+	      ## updating nabla unnormalized log-posterior gradient and hamiltonian derivative w.r.t theta
+        z    = (y-f)/sig
+        expz = exp(-z)
+	      R.   = f%*%t(f)%*%invK - diag(T)
+	      R    = invK%*%(R.)
+
+        nlp      = rep(0, D)
+        nlp[1:T] = (rep(1, T) - expz)/sig - as.vector(invK%*%f)
+        nlp[T+1] = -T + sum(z) - sum(z*expz) - a[1] + b[1]/exp(thetan[T+1]) 
+        nlp[T+2] = .5*sum(diag(R.)) - a[2] + b[2]/exp(thetan[T+2]) 
+        nlp[T+3] = .5*tr(R, nabK[[2]]) - a[3] + b[3]/exp(thetan[T+3]) 
+
+        ## terms that dont change when updating momentum
+        c1 = .5*tr(IG, dG1)
+        c2 = .5*tr(IG, dG2)
+	      c3 = .5*tr(IG, dG3)
+        r1 = IG%*%dG1%*%IG
+	      r2 = IG%*%dG2%*%IG
+        r3 = IG%*%dG3%*%IG
+
+	      ## < update momentum exactly > 
+        pn <- pn - epsilon/2 * (-nlp + c(rep(0, T), c1 -.5*as.numeric(t(ph)%*%r1%*%ph), 
+                                c2 -.5*as.numeric(t(ph)%*%r2%*%ph), c3 -.5*as.numeric(t(ph)%*%r3%*%ph)) )     
+	  }
+
+	  ## updating unnormalized log-posterior
+    lp = sum(log(dp(y, f, sig))) + dmvnorm(f, rep(0, T), K, log = TRUE) + sum(log(digam(thetan[(T+1):(T+3)], a, b)))
+
+	  ## proposed hamiltonian
+	  H.prop = - lp + (D/2)*log(2*pi) + .5*2*sum(log(diag(C))) + .5*as.numeric(t(pn)%*%IG%*%pn)
+
+	  ## log ratio for metropolis-hastings acceptance ratio
+	  logratio <- - log(H.prop) + log(H.current)
+
+	  if (logratio < -200 & logratio != "NaN") print(logratio)
+
+	  if ( (logratio > 0 | logratio > log(runif(1))) & logratio != "NaN" ) {
+	     theta[i, ] <- thetan
+	     ratio  <- ratio + 1
+	  }
+	  else theta[i, ] <- theta[i-1, ]
+ 
+        print(i)
+	}
+   
+   print(Sys.time()-start.time)
+
+ return(list(theta = theta, r = ratio/SS))
+ }
+
+ ## Generating values
+ B <- rmhmc(c(y, -2, -3., -0.1), 10000, 0.14, 14, 9, y, A); B$r
