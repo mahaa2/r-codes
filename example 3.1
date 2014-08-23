@@ -39,8 +39,10 @@
        mu    = theta[1]
        delta = theta[2]
        xi    = theta[3]
-       ll <- sum(log(f(x[2:T], x[1:(T-1)]*mu, exp(delta), xi))) + sum(dnorm(c(mu, xi), 0, 5, log = T)) + log(digam(delta, a, b))  
-       ifelse(ll != "-Inf", ll, -10^5)
+       
+       
+ ll <- sum(log(f(x[2:T], x[1:(T-1)]*mu, exp(delta), xi))) + sum(dnorm(c(mu, xi), 0, 5, log = T)) + log(digam(delta, a, b))  
+ ifelse(ll != "-Inf", ll, -10^5)
  }
  
  #######################################
@@ -52,12 +54,12 @@
         xi    = theta[3]
         sig = exp(delta)
 
-	      d = x[2:T]-mu*x[1:(T-1)]
-	      z = 1 + xi*d/sig
-	      w = d/sig^2
-	      q = d/sig
-
-	      D = rep(0, 3)
+	d = x[2:T]-mu*x[1:(T-1)]
+	z = 1 + xi*d/sig
+	w = d/sig^2
+	q = d/sig
+	
+	D = rep(0, 3)
         D[1] = 1/sig*sum(z^(-1)*((1+xi) - z^(-1/xi))*x[1:(T-1)]) - mu/25
         D[2]= ( sum((1+xi)*w*z^(-1) - w*z^(-1-1/xi))*sig - (T-1) ) - a + b/exp(delta) 
         D[3] = suppressWarnings(1/xi^(2)*sum(log(z)) - (1/xi+1)*sum(q*z^(-1)) + 
