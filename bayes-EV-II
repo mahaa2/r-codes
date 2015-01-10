@@ -1,0 +1,63 @@
+ #########################################################################################################################
+ ### log-likelihood function, gradient vector and expected information matrix and its derivatives
+ ### theta = (mu, sig)' = x = (x[1] exp(x[2]))'
+ #########################################################################################################################
+ 
+ ### unnormalized likelihood function
+ #########################################################################################################################
+ ll <- function(theta, x) {
+   	mu  = theta[1]
+   	sig = exp(theta[2])
+
+ sum(log(f(x, mu, sig)))
+ }
+
+ ### gradient vector of likelihood function
+ #########################################################################################################################
+ nll <- function(theta, x) {
+ 	mu  = theta[1]
+	sig = exp(theta[2])
+	z   = (x-mu)/sig
+	n   = length(x)
+	
+        D    = rep(0, 2)
+        D[1] = (n - sum(exp(-z)))/sig
+	D[2] = -n + sum(z) - sum(z*exp(-z)) 
+ return(D)
+ }
+ 
+ ### Expected Fisher Information (metric tensor) 
+ #########################################################################################################################
+ G <- function(theta, x) {
+      G   = matrix(, 2, 2)
+      mu  = theta[1]
+      sig = exp(theta[2])
+      n   = length(x)
+   
+      G[1,1] = 1/sig^2
+      G[1,2] = (J - 1)/sig
+      G[2,1] = G[1,2]
+      G[2,2] = ((pi^2)/6 + (1-J)^2))
+ return(n*G)
+ } 
+ 
+ ### maximum a posteriori
+ #########################################################################################################################
+# map = optim(c(1, log(2)), x = y, ll, gr = nll, method = 'BFGS', control = list(fnscale = -1, maxit = 99999)); map 
+
+# G. = G(map$par, y)
+# invG = solve(G)
+
+ ### Derivative of the metric tensor. Derivative w.r.t mu is a null matrix. Derivative w.r.t x[2]
+ #########################################################################################################################
+# dG2 <- function(theta, x) {
+# 	G   = matrix(0, 2, 2)
+#	mu  = theta[1]
+#        sig = exp(theta[2])
+#        n   = length(x)
+#        
+#        G[1,1] = -2/sig^(2)
+#	G[1,2] = -(J - 1)/sig
+#	G[2,1] = H[1,2]
+# return(n*G)
+# }
