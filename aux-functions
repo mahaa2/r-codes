@@ -1,0 +1,35 @@
+ #################
+ ### function mode
+ #################
+ require(modeest)
+ mode <- function(x) {
+         mode = mlv(x, method = "lientz", bw = 0.2)$M
+         
+ return(mode)
+ }
+ 
+ ##################################
+ ### Trace of product of matrices
+ ##################################
+ tr <- function(A, B) {
+       S = 0
+       for (i in 1:dim(A)[1]) S = S + A[i,] %*% B[,i]
+ return(as.numeric(S))
+ }
+ 
+ #############################################
+ ### functions for bias and mean squared error
+ #############################################
+ biasMSE = function(x, par, li, ls) {
+           x = x[x > li & x < ls]
+ 
+           bias = par - mean(x)
+           mse  = sum(par - x)^2/length(x)
+
+           S = matrix(, 1, 3)
+           colnames(S) = c('bias', 'mse', 'N')
+           S[ ,1] = bias
+           S[ ,2] = mse
+           S[ ,3] = length(x)
+ return(S)
+ }
