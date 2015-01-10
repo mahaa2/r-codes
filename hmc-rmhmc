@@ -1,0 +1,72 @@
+ #############################################
+ ### RMHMC and HMC
+ ### for generalized extreme value distribuion 
+ #############################################
+ 
+ ##################
+ ### Packages
+ ##################
+ require(MASS) # for gaussian random vector
+ require(coda) # for mcmc output analysis
+  
+ ######################################################################################################################
+ ### Hamiltonian Monte Carlo
+ ### initial values, size of chain, burn-in, lagged values, discretization size, number of leapfrog steps, metric, data
+ ######################################################################################################################
+ hmc <- function(theta.current, SS, burn, lag, epsilon, LF, M, y)  {
+
+	ratio = 0
+	
+	SS. = (SS + burn) * lag
+	idx = seq(burn * lag + 1, SS., by = lag)
+
+   	## preallocate matrix for the chain
+   	D.         <- length(theta.current)
+   	mD.        <- rep(0, D.)
+   	G.         <- M
+   	invG       <- solve(G.)
+   	theta      <- matrix( , SS., D.)
+   	theta[1, ] <- theta.current  
+	
+        start.time <- Sys.time()
+		
+	## generating chain
+	for(i in 2:SS.) {
+	
+	   pn     <- mvrnorm(1, mD., G.) ## G.
+	   thetan <- theta[i-1, ]
+
+	   ## current Hamiltonian
+           H.current <- - ll(thetan, y) + t(pn) %*% invG %*% pn/2 ## invG
+
+	   ## standard leapfrog steps
+	   pn <- pn + epsilon/2 * nll(thetan, y)
+	   for (l in 1:LF) {
+ 	       thetan <- thetan + epsilon * invG %*% pn  ## invG
+	       if (l != LF)  pn <- pn + epsilon * nll(thetan, y)
+	   }
+	   pn <- pn + epsilon/2 * nll(thetan, y)
+           pn <- -pn
+
+           ## proposed Hamiltonian and log-ratio Hamiltonian
+	   H.prop <- - ll(thetan, y) + t(pn) %*% invG %*% pn/2 ## invG
+	   logratio <- - log(H.prop) + log(H.current)
+ 
+           ## applying metropolis rule
+	   if ( (logratio > 0 | logratio > log(runif(1))) & logratio != "NaN" ) {
+	   theta[i, ] <- thetan
+	   ratio  <- ratio + 1
+	   }
+	   else theta[i, ] <- theta[i-1, ]
+
+	}
+        print(Sys.time()-start.time)
+        theta = theta[idx, ] 
+ #      write.table(theta, file = "C:/Users/usuario/Desktop/gevModel.txt", row.names = FALSE, col.names = FALSE)               
+ #      write.table(theta, file = "/home/maha/Desktop/exGP.txt", row.names = FALSE, col.names = FALSE)
+ #      theta[ ,2]      = exp(theta[ ,2])
+ #      colnames(theta) = c('mu', 'sigma', 'xi')
+ return(list(theta = theta, r = ratio/SS))
+ }
+ 
+# A = as.mcmc(B$theta); geweke.diag(A)$z
