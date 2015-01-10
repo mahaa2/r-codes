@@ -1,0 +1,84 @@
+ ###############################################
+ ### Generating a time series from AR-GEV models
+ ###############################################
+ arGEV = function(n, mu, parAR, sig, xi) {
+
+	     p = length(parAR) 
+	     M = p + 1
+             
+             zeros = rep(0, M)
+             e = c(zeros, rgev(n, 0, sig, xi))
+             x = rep(0, (M + n))
+
+             S = (M + 1):length(e)
+             for(t in S)  x[t] = mu + sum(parAR*x[(t-1):(t-p)]) + e[t]
+ return(x[S])
+ }   
+ 
+ ##################################################
+ ### Imposing stationarity through reciprocal roots
+ ##################################################
+# syAR = function(rrots) {
+#          p = length(rrots)
+#          theta = numeric(p)
+#                               
+#          theta[p] = (-1)^(p + 1) * prod(rrots)  
+#          theta[p-1] = - theta[p] * sum(1/rrots)
+
+#          if (p > 2) {
+#             for (m in 2:(p-1)) { 
+#                 a = 0 
+#                 for (j in 1:p) {
+#                 a = a + sum( theta[p:(p-(m-1))]/rep(rrots[j],m)^(m:1) )
+#                 }
+#             theta[p-m] = -(1/m)*a
+#             }
+#          }
+# return(theta)
+# }
+# 
+# rr = runif(3, -1, 1); rr
+# p.ar = syAR(rr); p.ar
+ 
+ ###############################################################################
+ ### Non-linear system of equation to find reciprocal roots given the parameters  
+ ###############################################################################
+# sn = function(rrots) {
+#     p = length(rrots)
+#     f = rep(0, p)
+#    
+#     f[p]   = p.ar[p] - (-1)^(p + 1) * prod(rrots)  
+#     f[p-1] = p.ar[p-1] + p.ar[p] * sum(1/rrots)
+
+#     if (p > 2) {
+#        for (m in 2:(p-1)) { 
+#            a = 0 
+#            for (j in 1:p) {
+#                a = a + sum( p.ar[p:(p-(m-1))]/rep(rrots[j],m)^(m:1) )
+#            }
+#            f[p-m] = p.ar[p-m] + (1/m)*a
+#        }
+#     }
+# return(f)
+# }
+
+# sn(rr)
+# BBsolve(runif(3, -1, 1), fn = sn)
+
+ ####################################################
+ ### Generating a time series from AR-Gaussian models
+ ####################################################
+
+#arNORM = function(n, mu, parAR, sig) {
+
+#	     p = length(parAR) 
+#	     M = p + 1
+#             
+#             zeros = rep(0, M)
+#             e = c(zeros, rnorm(n, 0, sig))
+#             x = rep(0, (M + n))
+
+#             S = (M + 1):length(e)
+#             for(t in S)  x[t] = mu + sum(parAR*x[(t-1):(t-p)]) + e[t]
+# return(x[S])
+# } 
