@@ -1,0 +1,335 @@
+ #######################################################################################################################
+ ### Gaussian process model
+ #######################################################################################################################
+ 
+ #######################################################################################################################
+ ### basic functions
+ #######################################################################################################################
+ source("/home/maha/Dropbox/projeto/R/main-files/aux-functions")
+ source("/home/maha/Dropbox/projeto/R/main-files/hmc-rmhmc")
+
+ #######################################################################################################################
+ ### packages
+ #######################################################################################################################
+ require(mvtnorm)
+
+ #######################################################################################################################
+ #### Generating random functions through a Gaussian process 
+ #######################################################################################################################
+ x  = seq(0.1, 10, length.out = 600)
+ K  = 1*outer(x + 2, x + 2, '*') + 2*exp(-2.97*sin(0.89*abs(outer(x, x, '-')))^2) 
+ K  = exp(p[2])*outer(x-p[3], x-p[3], '*') +  exp(p[4])*exp(-(1/exp(p[6])) * sin(exp(p[5])*abs(outer(x, x, '-')))^2 ) 
+ r1 = mvrnorm(10, rep(0, 600) , K)
+
+ pdf('realgp.pdf')
+ plot(NULL, xlim = range(0, 9), ylim = range(14, 0), xlab = "t",ylab="f(t)", main = "realizações do processo Gaussiano")
+ for (i in 1:10) lines(x, r1[i, ], lty = i)
+ 
+ #######################################################################################################################
+ ### Simulated data
+ #######################################################################################################################
+ n = 50
+ h = function(t) 4 + t + 1.5*sin(0.5*pi*t) # h = function(x) sin(4*pi*x)*exp(-1.5*x) #
+ x = sort(runif(n,  0 , 10))               # x = sort(c(runif(n/2, -8, 0), runif(n/2, 5, 14)))  
+ y = h(x) + rnorm(n, 0, 0.5)
+ plot(x, y)
+
+ A = list(); A[[1]] = outer(x, x, '*'); A[[2]] = outer(x, x, '+'); A[[3]] = abs(outer(x, x, '-'))
+
+ I = diag(n)
+ m0 = rep(0, n)
+
+ #################################################################
+ ### Covariance function and its derivatives
+ ### using parameterization on the real line
+ #################################################################
+ K <- function(theta2, A) {
+      phi1 = exp(theta2[1])
+      phi2 = theta2[2]
+      phi3 = exp(theta2[3])
+      phi4 = exp(theta2[4])
+      phi5 = exp(theta2[5])
+
+      K = phi1*(A[[1]] - A[[2]]*phi2 + phi2^2) + phi3*exp(-sin(phi4*A[[3]])^2/phi5)
+ return(K)
+ }
+
+ ##################################################################
+ ### nabK derivatire of covariance function w.r.t to each parameter
+ ##################################################################
+ nabK. <- function(theta2, A) {
+          phi1 = exp(theta2[1])
+          phi2 = theta2[2]
+          phi3 = exp(theta2[3])
+          phi4 = exp(theta2[4])
+          phi5 = exp(theta2[5])
+          
+          nab = list()
+          
+          W1 = sin(phi4*A[[3]])
+          W2 = W1^2
+          W3 = W2/phi5
+                                                                 
+          nab[[1]] = phi1*(A[[1]] - A[[2]]*phi2 + phi2^2)
+          nab[[2]] = - phi1*(A[[2]] - 2*phi2)
+          nab[[3]] = phi3*exp(-W3) 
+          nab[[4]] = - (2*phi4/phi5)*W1*cos(phi4*A[[3]])*A[[3]]*nab[[3]]
+          nab[[5]] = W3*nab[[3]]
+ return(nab)
+ }
+
+ #########################################################
+ ### inverse log-gamma density for 
+ ### theta = log sig or phi1 or phi2 using jacobian method
+ ######################################################### 
+ digam <- function(x, a, b) {
+          b^a / gamma(a) * exp(-x*a - b/exp(x))        
+ }
+ a = rep(.1, 5) 
+ b = rep(.1, 5)
+ curve(digam(x, a[1], b[1]), -20,40)
+ 
+ psd = 7
+ psd2 = psd^2
+        
+ ##############################################################
+ ### unnormalized log-posterior of hyperparameters
+ ### [sig2 phi1 phi2]' = [exp(theta1) exp(theta2) exp(theta3)]'
+ ##############################################################
+ ll = function(theta, y) {
+      sig2 = exp(theta[1])
+
+ dmvnorm(y, m0, I*sig2 + K(theta[2:6], A), log = TRUE) + sum(log(digam(theta[c(1, 2, 4:6)], a, b))) + dnorm(theta[3], 0, psd, log = TRUE)
+ }
+
+ ##############################################################
+ ### gradiente of unnormalized log-posterior of hyperparameters
+ ##############################################################
+ nll = function(theta, y) {
+      sig2  = exp(theta[1])
+      nabK  = nabK.(theta[2:6], A)
+      K     = K(theta[2:6], A)
+      invKI = solve(K + I*sig2)
+      R     = y %*% t(y) %*% invKI - I  
+      R.    = invKI %*% R 
+     
+      D    = rep(0, 6)
+      D[1] = .5 * tr(invKI, R) * sig2 - a[1] + b[1]/sig2
+      D[2] = .5 * tr(R., nabK[[1]]) - a[2] + b[2]/exp(theta[2])
+      D[3] = .5 * tr(R., nabK[[2]]) - theta[3]/psd2
+      D[4] = .5 * tr(R., nabK[[3]]) - a[3] + b[3]/exp(theta[4]) 
+      D[5] = .5 * tr(R., nabK[[4]]) - a[4] + b[4]/exp(theta[5]) 
+      D[6] = .5 * tr(R., nabK[[5]]) - a[5] + b[5]/exp(theta[6]) 
+ return(D)
+ }
+ 
+ ###################################################
+ ### Expected Information Matrix
+ ###################################################
+ G = function(theta) {
+     sig2  = exp(theta[1])
+     nabK  = nabK.(theta[2:6], A)
+     K     = K(theta[2:6], A)
+     invKI = solve(K + I*sig2)
+     
+     K2 = invKI %*% nabK[[1]]
+     K3 = invKI %*% nabK[[2]]
+     K4 = invKI %*% nabK[[3]]
+     K5 = invKI %*% nabK[[4]]
+     K6 = invKI %*% nabK[[5]]
+
+     G = matrix(, 6, 6)
+     G[1, 1] = sig2^2/2 * tr(invKI, invKI) + b[1]/sig2
+     G[1, 2] = G[2, 1] = sig2/2 * tr(invKI, K2)
+     G[1, 3] = G[3, 1] = sig2/2 * tr(invKI, K3)
+     G[1, 4] = G[4, 1] = sig2/2 * tr(invKI, K4)
+     G[1, 5] = G[5, 1] = sig2/2 * tr(invKI, K5)
+     G[1, 6] = G[6, 1] = sig2/2 * tr(invKI, K6)
+     
+     G[2, 2] = .5 * tr(K2, K2) + b[2]/exp(theta[2])
+     G[2, 3] = G[3, 2] = .5 * tr(K2, K3)
+     G[2, 4] = G[4, 2] = .5 * tr(K2, K4)
+     G[2, 5] = G[5, 2] = .5 * tr(K2, K5)
+     G[2, 6] = G[6, 2] = .5 * tr(K2, K6)
+     
+     G[3, 3] = .5 * tr(K3, K3) + 1/psd2
+     G[3, 4] = G[4, 3] = .5 * tr(K3, K4)
+     G[3, 5] = G[5, 3] = .5 * tr(K3, K5)
+     G[3, 6] = G[6, 3] = .5 * tr(K3, K6)
+     
+     G[4, 4] = .5 * tr(K4, K4) + b[3]/exp(theta[4])
+     G[4, 5] = G[5, 4] = .5 * tr(K4, K5)
+     G[4, 6] = G[6, 4] = .5 * tr(K4, K6)
+     
+     G[5, 5] = .5 * tr(K5, K5) + b[4]/exp(theta[5])
+     G[5, 6] = G[6, 5] = .5 * tr(K5, K6)
+     
+     G[6, 6] = .5 * tr(K6, K6) + b[5]/exp(theta[6])
+ return(G)
+ }
+ 
+ #######################################################################################################################
+ ### maximum a posteriori
+ #######################################################################################################################
+ map = optim(rnorm(6, 0, 1), ll, nll, y = y, control = list(fnscale = -1), method = 'BFGS', hessian = TRUE); map
+ init = c(-1.4, 0.001, 13000, 2, -1.34, 2)
+ map = optim(init, ll, nll, y = y, control = list(fnscale = -1), method = 'BFGS', hessian = TRUE); map
+ G. = -map$hessian
+ G. = G(map$par)
+ invG = solve(G.) 
+ 
+ #######################################################################################################################
+ ### Hamiltonian Monte Carlo
+ #######################################################################################################################
+ B = hmc(map$par, 200, 1, 1, .08, 14, G., y) 
+ B = hmc(c(0, 0, 0, 0, 0, 0), 21000, 1000, 1, .1, 14, G., y)
+ 
+ par(mfrow=c(3, 2)); for (i in 1:6) plot(B$theta[, i], type = 'l')
+
+ scatterplotMatrix(B$theta, diagonal = 'histogram', nclass = 30, var.labels = rep('', 6), col = c(0, 1, 1), reg.lin = F, smoother = F, upper.panel = NULL)
+ 
+ #######################################################################################################################
+ ### predictive distribution and inference
+ #######################################################################################################################
+ N   = dim(B$theta)[1]
+ N   = dim(B)
+ f.D = matrix(, N, n)
+ x.  = seq(x[1], x[n] + 10, length.out = 300)
+ nx. = length(x.)
+ fx. = matrix(, N, nx.) 
+ y.  = matrix(, N, nx.)
+ 
+ A.  = list();  A.[[1]] = outer(x., x, '*');   A.[[2]] = outer(x., x, '+');   A.[[3]] = abs(outer(x., x, '-')); 
+ A.. = list(); A..[[1]] = outer(x., x., '*'); A..[[2]] = outer(x., x., '+'); A..[[3]] = abs(outer(x., x., '-'));
+  
+ for (i in 1:N) {
+    print(i)
+    Kf       = K(B$theta[i ,2:6], A) + diag(0.005, n)
+    iKf      = solve(Kf)
+    Kfs2inv  = solve(Kf + I*exp(B$theta[i, 1]))
+    R        = Kf %*% Kfs2inv
+    test     = try(mvrnorm(1, R %*% y, Kf - R %*% Kf))
+    if  (inherits(test, "try-error") == TRUE) { f.D[i, ] = f.D[i-1, ] }
+    else f.D[i, ] = test
+    K.       = K(B$theta[i ,2:6], A.)
+    K..      = K(B$theta[i ,2:6], A..)
+    test     = try(mvrnorm(1, K. %*% iKf %*% f.D[i, ], K.. - K. %*% iKf %*% t(K.) + diag(0.005, nx.)))
+    if  (inherits(test, "try-error") == TRUE) { fx.[i, ] = fx.[i-1, ] }
+    else fx.[i, ] = test
+    y.[i,  ] = mvrnorm(1, fx.[i, ], diag(exp(B$theta[i, 1]), nx.))
+ }
+ 
+ meanf. = apply(fx., 2, mean)
+ varf.  = apply(fx., 2, var)
+ meanfD = apply(f.D, 2, mean)
+ varfD  = apply(f.D, 2, var)
+ meany. = apply(y., 2, mean)
+ vary.  = apply(y., 2, var)
+
+ quanf   = matrix(nrow = n  , ncol = 2)
+ for(i in 1:n) {
+    quanf[i, ] =  quantile(f.D[, i], prob = c(0.05, 0.95))
+ }
+ 
+ quanfx. = matrix(nrow = nx., ncol = 2)
+ quany.  = matrix(nrow = nx., ncol = 2)
+ for(i in 1:nx.) {
+     quany.[i, ] = quantile(y.[, i], prob = c(0.05, 0.95))
+    quanfx.[i, ] = quantile(fx.[, i], prob = c(0.05, 0.95))
+ } 
+ 
+ 
+ png('exGPp.png', width= 900, height = 700) 
+ plot(NULL, xlim=c(min(x.) + .6, max(x.) ), ylim = c(min(meany.) - .5, max(meany.)), xlab = 'x', ylab = 'y', bty = 'n')
+ polygon(x = c(x., x.[length(x.):1]), y = c(quany.[, 2], quany.[, 1][length(quany.[, 1]):1]), col = 'lightgrey', border = NA)
+ polygon(x = c(x., x.[length(x.):1]), y = c(quanfx.[, 2], quanfx.[, 1][length(quanfx.[, 1]):1]), col = 'darkgrey', border = NA)
+ lines(x., meany.)
+ lines(x., meanf.)3323.0
+ points(x, y, pch = 4, col = 1)
+ curve(h, 0, 19.5, add = TRUE, lty = 2, col = 1, lwd = 2) 
+ dev.off()
+ 
+ png('postGP.png', width= 700, height = 500) 
+ plot(NULL, xlim=c(min(x), max(x)), ylim = c(min(meanfD) - .5, max(meanfD) + .5), xlab = 'x', ylab = expression(widehat(f[x]~"|"~D)), bty = 'n')
+ points(x, quanf[, 1],  pch = '-', cex = 2.5)
+ points(x, quanf[, 2],  pch = '-', cex = 2.5)
+ points(x, y, pch = 4, col = 'grey29')
+ points(x, meanfD, pch = 20, col = 1, cex = 0.7) 
+ dev.off() 
+ 
+ ####################################################################################################################################
+ ### plots
+ ####################################################################################################################################
+ 
+ data = read.table(file = '/home/maha/Dropbox/projeto/R/sim-gpModel/gpModel-sim-data.txt', header = FALSE) 
+ x = data[, 1]; y = data[, 2]; n = length(x)
+ B    = read.table(file = '/home/maha/Dropbox/projeto/R/sim-gpModel/gpModel-sim-post.txt', header = FALSE)
+ f.D  = read.table(file = '/home/maha/Dropbox/projeto/R/sim-gpModel/gpModel-sim-postf.txt', header = FALSE)
+ fx.  = read.table(file = '/home/maha/Dropbox/projeto/R/sim-gpModel/gpModel-sim-predfx.txt', header = FALSE)
+ y.   = read.table(file = '/home/maha/Dropbox/projeto/R/sim-gpModel/gpModel-sim-pred.txt', header = FALSE)
+
+
+ sig2 = exp(B[, 1]); phi1 = exp(B[, 2]); phi2 = B[, 3]; phi3 = exp(B[, 4]); phi4 = exp(B[, 5]); phi5 = exp(B[, 6])
+
+ plot(f.D[, 1], f.D[, 3])
+         
+ par(mfrow=c(3, 2)); for (i in 1:6) plot(exp(B[, ]), type = 'l')
+ 
+ par(mfrow = c(3, 2));
+ plot(exp(B[, 1]), type = 'l'); plot(exp(B[, 2])[exp(B[, 2]) < 5000], type = 'l'); plot(B[, 3], type = 'l');
+ plot(exp(B[, 4])[exp(B[, 4]) < 100000], type = 'l'); plot(exp(B[, 5]), type = 'l'); plot(exp(B[, 6])[exp(B[, 6]) < 100000], type = 'l')
+ 
+ scatterplotMatrix(B, diagonal = 'histogram', nclass = 30, pch = 4, var.labels = rep('', 6), col = c(0, 1, 1), reg.lin = F, smoother = F, upper.panel = NULL)
+ 
+ hist(sort(exp(B[, 2]))[1:20000], breaks = 400, xlim = c(0, 30))
+ hist(sort(exp(B[, 4]))[1:18000], breaks = 300, xlim = c(0, 400))
+ hist(sort(exp(B[, 6]))[1:20000], breaks = 500, xlim = c(0, 400))
+
+ plot(exp(B[, 1]), exp(B[, 2]), ylim = c(0, 5000))
+ plot(exp(B[, 1]), exp(B[, 4]), ylim = c(0, 40000))
+
+ png('histGP.png', width= 2500, height = 1200) 
+ par(mfrow=c(6, 6), mar = c(.9, .9, .9, .9))
+ hist(exp(B[, 1]), prob = T, main = '', axes = F, xlab = '', breaks = 50)
+ plot(exp(B[, 1]), exp(B[, 2]), ylim = c(0, 5000), axes = F)
+ plot(exp(B[, 1]), B[, 3], axes = F) 
+ plot(exp(B[, 1]), exp(B[, 4]), ylim = c(0, 40000), axes = F)
+ plot(exp(B[, 1]), exp(B[, 5]), axes = F)
+ plot(exp(B[, 1]), exp(B[, 6]), ylim = c(0, 10000), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(sort(exp(B[, 2]))[1:20000], main = '', breaks = 400, xlim = c(0, 50), axes = F)
+ plot(exp(B[, 2]), B[, 3], xlim = c(0, 5000), axes = F)
+ plot(exp(B[, 2]), exp(B[, 4]), xlim = c(0, 1000), ylim = c(0, 1000), axes = F)
+ plot(exp(B[, 2]), exp(B[, 5]), xlim = c(0, 1000), axes = F)
+ plot(exp(B[, 2]), exp(B[, 6]), xlim = c(0, 1000), ylim = c(0, 1000), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(B[, 3], prob = T, main = '', axes = F, xlab = '', breaks = 50)
+ plot(B[, 3], exp(B[, 4]), ylim = c(0, 50000), axes = F)
+ plot(B[, 3], exp(B[, 5]), axes = F)
+ plot(B[, 3], exp(B[, 6]), ylim = c(0, 50000), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(sort(exp(B[, 4]))[1:20000], breaks = 2000, xlim = c(0, 300), main = '', axes = F)
+ plot(exp(B[, 4]), exp(B[, 5]), xlim = c(0, 20000), axes = F)
+ plot(exp(B[, 4]), exp(B[, 6]), xlim = c(0, 5000), ylim = c(0,5000), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(exp(B[, 5]), prob = T, main = '', axes = F, xlab = '', breaks = 50)
+ plot(exp(B[, 5]), exp(B[, 6]), ylim = c(0, 5000), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(sort(exp(B[, 6]))[1:20000], breaks = 500, xlim = c(0, 200), main = '', axes = F)
+ dev.off()
+ 
