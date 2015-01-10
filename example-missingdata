@@ -1,0 +1,446 @@
+ ######################################################################
+ ### bayesian nonparametrics for extreme value time series prediction
+ ### using extreme value distribution type-I for maxima
+ ######################################################################
+ 
+ ######################################################################
+ ### basic gev functions
+ ######################################################################
+ source("/home/maha/Dropbox/projeto/R/main-files/basicfunctions-EV-II")
+ source("/home/maha/Dropbox/projeto/R/main-files/aux-functions")
+ source("/home/maha/Dropbox/projeto/R/main-files/hmc-rmhmc")
+
+ ##################################
+ ### loading packages 
+ ##################################
+ require(compiler); enableJIT(3)
+ require(mvtnorm)
+     
+ ##################################################################
+ ### generating simulated data
+ ##################################################################
+ n = 100
+ h = function(t) 2 + t + 1.5*sin(0.5*pi*t)         # h = function(t) sin(4*pi*t)*exp(-0.5*t)
+ t = sort(c(runif(n/2, -7, 3), runif(n/2, 7, 13))) # t = sort(runif(n,  0 , 9))
+ y = h(t) + rgumax(n, 0, 0.5)
+ plot(t, y)
+                 
+ #####################
+ ### Euler Constant
+ #####################
+ J <- -digamma(1)
+
+ ###################################
+ ### Matrices that stays unchanged 
+ ###################################
+  T = length(y)
+  D = T+6
+  A = list(); A[[1]] = outer(t, t, '*'); A[[2]] = outer(t, t, '+'); A[[3]] = abs(outer(t, t, '-')); 
+  c = 0.0087; I = c*diag(T)
+ dT = diag(T)
+ 
+ #################################################################
+ ### Covariance function and its derivatives
+ ### using parameterization on the real line
+ #################################################################
+ K <- function(theta2, A) {
+      phi1 = exp(theta2[1])
+      phi2 = theta2[2]
+      phi3 = exp(theta2[3])
+      phi4 = exp(theta2[4])
+      phi5 = exp(theta2[5])
+
+      K = phi1*(A[[1]] - A[[2]]*phi2 + phi2^2) + phi3*exp(-sin(phi4*A[[3]])^2/phi5) + I
+ return(K)
+ }
+
+ ##################################################################
+ ### nabK derivatire of covariance function w.r.t to each parameter
+ ##################################################################
+ nabK. <- function(theta2, A) {
+          phi1 = exp(theta2[1])
+          phi2 = theta2[2]
+          phi3 = exp(theta2[3])
+          phi4 = exp(theta2[4])
+          phi5 = exp(theta2[5])
+          
+          nab = list()
+          
+          W1 = sin(phi4*A[[3]])
+          W2 = W1^2
+          W3 = W2/phi5
+                                                                 
+          nab[[1]] = phi1*(A[[1]] - A[[2]]*phi2 + phi2^2)
+          nab[[2]] = - phi1*(A[[2]] - 2*phi2)
+          nab[[3]] = phi3*exp(-W3) 
+          nab[[4]] = - (2*phi4/phi5)*W1*cos(phi4*A[[3]])*A[[3]]*nab[[3]]
+          nab[[5]] = W3*nab[[3]]
+ return(nab)
+ }
+ 
+ #########################################################
+ ### inverse log-gamma density for 
+ ### theta = log sig or phi1 or phi2 using jacobian method
+ ######################################################### 
+ digam <- function(x, a, b) {
+          b^a / gamma(a) * exp(-x*a - b/exp(x))        
+ }
+ a = rep(0.1, 6) 
+ b = rep(0.1, 6)
+ curve(digam(x, a[1], b[1]), -10,20)
+
+ ################################
+ ### unnormalized log-posterior 
+ ################################
+ ll <- function(theta, x) {
+       fx     = theta[1:T]
+       sig    = exp(theta[T+1])
+       theta2 = theta[(T+2):D]
+       
+        ll = sum(log(f(x, fx, sig))) + dmvnorm(fx, rep(0, T), K(theta2, A), log = TRUE) + sum(log(digam(c(theta[T+1], theta2), a, b))) 
+ ifelse(ll != "-Inf", ll, -10000000)
+ }
+ 
+ ll(c(y, rep(0.1, 6)), y)
+
+ ##########################################
+ ### gradient of unnormalized log-posterior
+ ##########################################
+ nll <- function(theta, x) {
+        fx     = theta[1:T]
+        sig    = exp(theta[T+1])
+        theta2 = theta[(T+2):D]
+
+        z    = (x - fx)/sig
+        expz = exp(-z)
+        invK = solve(K(theta2, A))
+        nabK = nabK.(theta2, A) 
+	R.   = fx %*% t(fx) %*% invK - dT
+	R    = invK %*% (R.)
+        
+        nlp      = rep(0, D)
+        nlp[1:T] = (rep(1, T) - expz)/sig - as.vector(invK %*% fx)
+        nlp[T+1] = -T + sum(z) - sum(z*expz) - a[1] + b[1]/exp(theta[T+1])
+        nlp[T+2] = .5*tr(R, nabK[[1]]) - a[2] + b[2]/exp(theta2[1])
+        nlp[T+3] = .5*tr(R, nabK[[2]]) - a[3] + b[3]/exp(theta2[2])  
+        nlp[T+4] = .5*tr(R, nabK[[3]]) - a[4] + b[4]/exp(theta2[3])
+        nlp[T+5] = .5*tr(R, nabK[[4]]) - a[5] + b[5]/exp(theta2[4])
+        nlp[T+6] = .5*tr(R, nabK[[5]]) - a[6] + b[6]/exp(theta2[5])
+ return(nlp)
+ }
+  
+ nll(c(y, rep(0, 6)), y)
+ 
+ #########################################################
+ ### metric tensor G(theta)
+ #########################################################
+ G <- function(theta) {
+      G      = matrix(0, D, D)
+      fx     = theta[1:T]
+      sig    = exp(theta[T+1])
+      theta2 = theta[(T+2):D]
+
+      nabK  = nabK.(theta2, A)
+      K     = K(theta2, A) 
+      invK  = solve(K)
+      iKdK1 = invK %*% nabK[[1]]
+      iKdK2 = invK %*% nabK[[2]]
+      iKdK3 = invK %*% nabK[[3]]
+      iKdK4 = invK %*% nabK[[4]]
+      iKdK5 = invK %*% nabK[[5]]
+
+      G[1:T, 1:T] = diag(T)/sig^2 + invK
+      G[1:T, T+1] = G[T+1, 1:T] = (J - 1)/sig
+      G[T+1, T+1] = T*((pi^2)/6 + (1-J)^2) + b[1]/exp(theta[T+1])
+
+      G[T+2, T+2] = .5*tr(iKdK1, iKdK1) + b[2]/exp(theta[T+2])
+      G[T+2, T+3] = .5*tr(iKdK1, iKdK2) -> G[T+3, T+2]
+      G[T+2, T+4] = .5*tr(iKdK1, iKdK3) -> G[T+4, T+2]
+      G[T+2, T+5] = .5*tr(iKdK1, iKdK4) -> G[T+5, T+2]
+      G[T+2, T+6] = .5*tr(iKdK1, iKdK5) -> G[T+6, T+2]
+
+      G[T+3, T+3] = .5*tr(iKdK2, iKdK2) + b[3]/exp(theta[T+3])
+      G[T+3, T+4] = .5*tr(iKdK2, iKdK3) -> G[T+4, T+3]
+      G[T+3, T+5] = .5*tr(iKdK2, iKdK4) -> G[T+5, T+3]
+      G[T+3, T+6] = .5*tr(iKdK2, iKdK5) -> G[T+6, T+3]
+
+      G[T+4, T+4] = .5*tr(iKdK3, iKdK3) + b[4]/exp(theta[T+4])
+      G[T+4, T+5] = .5*tr(iKdK3, iKdK4) -> G[T+5, T+4]
+      G[T+4, T+6] = .5*tr(iKdK3, iKdK5) -> G[T+6, T+4]
+ 
+      G[T+5, T+5] = .5*tr(iKdK4, iKdK4) + b[5]/exp(theta[T+5]) 
+      G[T+5, T+6] = .5*tr(iKdK4, iKdK5) -> G[T+6, T+5]
+ 
+      G[T+6, T+6] = .5*tr(iKdK5, iKdK5) + b[6]/exp(theta[T+6])
+	
+ return(G)
+ }
+ 
+ G. = G(c(rep(0, T), -0.8431403, -0.2840989, -2.097073, 1.4178477, -0.2448429, 1.4828678))
+ invG = solve(G.)
+ 
+ #####################################
+ ### Hamiltonian Monte Carlo
+ ######################################
+ B = hmc(c(y, -0.5, -0.13, -2, 2, -.2, 1.84), 25000, 2000, 20, .085, 12, G., y)
+ B = hmc(c(y, -1.4, -0.13, -4, 2, -.8, 1.84), 1100, 100, 2, .019, 14, G., y)
+ 
+ par(mfrow=c(3, 2)); for (i in 1:6) plot(B$theta[, T+i], type = 'l')
+ par(mfrow=c(3, 2)); r = sample(1:T, 6, replace = FALSE); for (i in 1:6) plot(B$theta[,r[i]], type = 'l')
+
+ par(mfrow=c(3, 2)); for (i in 1:6) hist(B$theta[,T+i], breaks = 30)
+ 
+ ##########################################################################################################
+ ### Predictionsss
+ ##########################################################################################################
+
+ ###################################################
+ ### horizon desired and/or points to be predicted
+ ###################################################
+ SS  = 10000
+ t.  = seq(t[1] ,t[T] + 10, length.out = 300)
+ T.  = length(t.)
+ I.  = diag(c, T.)
+ A.  = list(),  A.[[1]] = outer(t., t, '*');   A.[[2]] = outer(t., t, '+');   A.[[3]] = abs(outer(t., t, '-')); 
+ A.. = list(), A..[[1]] = outer(t., t., '*'); A..[[2]] = outer(t., t., '+'); A..[[3]] = abs(outer(t., t., '-'));
+ y.  = matrix(, SS, T.)
+ 
+ ######################################################
+ ### Drawning values for y*|D
+ ###################################################### 
+ ft     = as.matrix(M[1:SS,1:T])
+ sig    = exp(M[1:SS,(T+1)])
+ theta2 = M[1:SS,(T+2):D]
+    
+ ft. = matrix(, SS, T.)
+ for (i in 1:SS) {
+      print(i)
+      K.      = K(theta2[i, ], A.)
+      a       = K. %*% solve(K(theta2[i, ], A) + I)
+      m       = a %*% ft[i, ]   
+      Q       = K(theta2[i, ], A..) + I. - a %*% t(K.)
+      test    = try(mvrnorm(1, m, Q))
+      if  (inherits(test, "try-error") == TRUE) { ft.[i, ] = ft.[i-1, ] }
+      else fx.[i, ] = test
+      y.[i, ] = rgumax(1, ft.[i, ], sig[i]) 
+ }
+  
+ ###################################################
+ ### mean variance and 
+ ### credible region 95%
+ ### of predictive distribution y*|D
+ ###################################################
+ meanft  = apply(ft, 2, mean)
+ modeft  = apply(ft, 2, mode)
+ 
+ meanft. = apply(ft., 2, mean)
+ modeft. = apply(ft., 2, mode)
+ 
+ meansy. = apply(y., 2, mean)
+ modey.  = apply(y., 2, mode) 
+ 
+ varsy.  = apply(y., 2, var)
+ 
+ quanft = matrix(nrow = 100, ncol = 2)
+ quanft. = matrix(nrow = T., ncol = 2)
+ quany. = matrix(nrow = T., ncol = 2)
+ 
+ for(i in 1:T) {
+    quanft[i, ] =  quantile(ft[, i], prob = c(0.05, 0.95))
+ }
+ 
+ for(i in 1:T.) {
+ quanft.[i, ] = quantile(ft.[, i], prob = c(0.05, 0.95))
+ quany.[i, ]  = quantile(y.[, i], prob = c(0.05, 0.95))
+ }
+ 
+ lsc = quany.[, 1]
+ lic = quany.[, 2]
+
+ ######################################################################################
+ ### display observed series  
+ ### predicted series
+ ### credible region 
+ ######################################################################################
+
+ png('predev.png', width= 2500, height = 1200)  
+ par(mfrow = c(1, 2))
+ plot(x = NULL, xlim = c(10, 23), ylim = c(10, 25), xlab = "x", ylab = "y", bty = 'n')
+ plot(x = NULL, xlim = c(10, 23), ylim = c(10, 25), xlab = "x", ylab = "", bty = 'n', yaxt='n')
+
+ plot(x = NULL, xlim = c(3, 7), ylim = c(3, 10), xlab = "x", ylab = "y", bty = 'n')
+ plot(x = NULL, xlim = c(3, 7), ylim = c(3, 10), xlab = "x", ylab = "y", bty = 'n', yaxt='n')
+ 
+ polygon(x = c(t., t.[length(t.):1]), y = c(quany.[, 2],  quany.[, 1][length(quany.[, 1]):1]), col = 'lightgrey', border = NA)
+ #polygon(x = c(t., t.[length(t.):1]), y = c(quanft.[, 2], quanft.[, 1][length(quanft.[, 1]):1]), col = 'darkgrey', border = NA)
+ #lines(t., meanft. , col = "black", lty = 1)
+ #lines(t., meanft. , col = "black", lty = 1) 
+ lines(t., meansy. , col = "black", lty = 6, lwd = 3)
+ lines(t., modey.,  col = "black", lty = 6, lwd = 3)
+ #points(t, y , col = "black", type = 'p', pch = 4)
+ curve(h, -6.5, 23, add = TRUE, lty = 1, col = 1, lwd = 4, n = 200) 
+        # legend(x = 40, y = 0.75,   c('serie temporal predita', 'serie observada', 'região de credibilidade 95%'),
+#       col = c('black', 'black', 'lightgrey'), lty = c(1, NA, 1), lwd = c(1, NA, 6), pch = c(NA,4,NA), cex = 1.2)
+ dev.off()
+ 
+ ####################################################################################################################################
+ ### plots
+ ####################################################################################################################################
+
+ data = read.table(file = '/home/maha/Dropbox/projeto/R/sim-gpGEV/gev-sim2-data.txt', header = FALSE) 
+ t = data[, 2]; y = data[, 1]; T = length(t); D = T + 6
+ B   = read.table(file = '/home/maha/Dropbox/projeto/R/sim-gpGEV/gev-sim2-post.txt', header = FALSE)
+ ft  = B[ ,1:100]
+ ft. = read.table(file = '/home/maha/Dropbox/projeto/R/sim-gpGEV/gev-sim2-predfx.txt', header = FALSE)
+ y.  = read.table(file = '/home/maha/Dropbox/projeto/R/sim-gpGEV/gev-sim2-pred.txt', header = FALSE)    
+ 
+ pdf('exEVI.pdf', width = 10, height = 8)
+ plot(t, y, main = 'valores simulados')
+ dev.off()
+ 
+ plot(ft[, 1], ft[, 2])
+ plot(ft[, 1], B[, T+1])
+ plot(ft.[, 1], ft.[, 2])
+ plot(y.[, 1], y.[, 2])
+ 
+ scatterplotMatrix(B[, (T+1):D], diagonal = 'histogram', nclass = 30, pch = 4, var.labels = rep('', 6), col = 'gray', reg.lin = F, smoother = F, upper.panel = NULL)
+
+ sig = exp(B[, T+1]); phi1 = exp(B[, T+2]); phi2 = B[, T+3]; phi3 = exp(B[, T+4]); phi4 = exp(B[, T+5]); phi5 = exp(B[, T+6])
+ 
+ hist(sort(phi1)[1:24000], breaks = 700, prob = T, xlim = c(0, 40))
+ hist(sort(phi3)[1:24000], breaks = 5000, prob = T, xlim = c(0, 100))
+ hist(sort(phi5)[1:24000], breaks = 2000, prob = T, xlim = c(0, 500))  
+ 
+ plot(sig, phi1, ylim = c(0, 200))
+ 
+ png('histEVGP.png', width= 2500, height = 1200) 
+ par(mfrow=c(6, 6), mar = c(.9, .9, .9, .9))
+ hist(sig, prob = T, main = '', axes = F, xlab = '', breaks = 40)
+ plot(sig, phi1, ylim = c(0, 2000), axes = F)
+ plot(sig, phi2, axes = F) 
+ plot(sig, phi3, ylim = c(0, 5500), axes = F)
+ plot(sig, phi4, axes = F)
+ plot(sig, phi5, ylim = c(0, 3000), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(sort(phi1)[1:24000], breaks = 700, prob = T, xlim = c(0, 30), main ='', axes = F)
+ plot(phi1, phi2, xlim = c(0, 700), axes = F)
+ plot(phi1, phi3, xlim = c(0, 1000), ylim = c(0, 1000), axes = F)
+ plot(phi1, phi4, xlim = c(0, 1000), axes = F)
+ plot(phi1, phi5, xlim = c(0, 1000), ylim = c(0, 1000), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(phi2, breaks = 40, prob = T, main = '', axes = F)
+ plot(phi2, phi3, ylim = c(0, 5000), axes = F)
+ plot(phi2, phi4, axes = F)
+ plot(phi2, phi5, ylim = c(0, 5000), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(sort(phi3)[1:24000], breaks = 5000, prob = T, xlim = c(0, 40), main = '', axes = F)
+ plot(phi3, phi4, xlim = c(0, 5000), axes = F)
+ plot(phi3, phi5, xlim = c(0, 5000), ylim = c(0,5000), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(phi4, prob = T, main = '', axes = F, xlab = '', breaks = 40)
+ plot(phi4, phi5, ylim = c(0, 5000), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(sort(phi5)[1:24000], breaks = 2000, prob = T, xlim = c(0, 30), main = '', axes = F)  
+ dev.off()
+ 
+ #########################################################################################################################
+ ### parameterization on the real line
+ ######################################################################################################################### 
+ 
+ png('histEVGP2.png', width= 2500, height = 1200) 
+ par(mfrow=c(6, 6), mar = c(.9, .9, .9, .9))
+ hist(B[ ,T+1], prob = T, main = '', axes = F, xlab = '', breaks = 40)
+ plot(B[ ,T+1], B[ ,T+2], xlim = c(-5, 5), axes = F)
+ plot(B[ ,T+1], B[ ,T+3], xlim = c(-5, 5), axes = F) 
+ plot(B[ ,T+1], B[ ,T+4], xlim = c(-5, 5), axes = F)
+ plot(B[ ,T+1], B[ ,T+5], ylim = c(-.35, -.15), axes = F)
+ plot(B[ ,T+1], B[ ,T+6], xlim = c(-5, 5), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(B[ ,T+2], prob = T, main = '', axes = F, xlab = '', breaks = 40)
+ plot(B[ ,T+2], B[ ,T+3], xlim = c(-2.5, 11), ylim = c(-4, 35), axes = F)
+ plot(B[ ,T+2], B[ ,T+4], axes = F)
+ plot(B[ ,T+2], B[ ,T+5], ylim = c(-.30, -.20), axes = F)
+ plot(B[ ,T+2], B[ ,T+6], axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(B[ ,T+3], prob = T, main = '', axes = F, xlab = '', breaks = 50)
+ plot(B[ ,T+3], B[ ,T+4], xlim = c(-3.5, 30), ylim = c(-4, 25), axes = F)
+ plot(B[ ,T+3], B[ ,T+5], ylim = c(-.35, -.15), axes = F)
+ plot(B[ ,T+3], B[ ,T+6], xlim = c(-4, 25), ylim = c(-2, 20), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(B[ ,T+4], prob = T, main = '', axes = F, xlab = '', breaks = 50)
+ plot(B[ ,T+4], B[ ,T+5], ylim = c(-.35, -.15), axes = F)
+ plot(B[ ,T+4], B[ ,T+6], axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(B[ ,T+5], prob = T, main = '', axes = F, xlab = '', breaks = 50)
+ plot(B[ ,T+5], B[ ,T+6], xlim = c(-.35, -.15), axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(B[ ,T+6], prob = T, main = '', axes = F, xlab = '', breaks = 50)
+ dev.off()
+
+ #########################################################################################################################
+ ### latent Gaussian process
+ #########################################################################################################################
+  
+ png('histEVGP2f.png', width= 1500, height = 800)  
+ par(mfrow=c(4, 4), mar = c(.9, .9, .9, .9)) 
+ hist(ft[, 1], prob = T, main = '', axes = F, xlab = '', breaks = 40)
+ plot(ft[, 1], ft[, 2], axes = F)
+ plot(ft[, 1], ft[, 99], axes = F) 
+ plot(ft[, 1], ft[, 100], axes = F)
+
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(ft[, 2], prob = T, main = '', axes = F, xlab = '', breaks = 40)
+ plot(ft[, 2], ft[, 99], axes = F)
+ plot(ft[, 2], ft[, 100], axes = F)
+  
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(ft[, 99], prob = T, main = '', axes = F, xlab = '', breaks = 50)
+ plot(ft[, 99], ft[, 100], axes = F)
+ 
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ plot(1, type = "n", axes = F, xlab = "", ylab = "")
+ hist(ft[, 100], prob = T, main = '', axes = F, xlab = '', breaks = 50)
+ dev.off()
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
