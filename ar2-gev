@@ -1,0 +1,187 @@
+ ###################################
+ ## packages
+ ###################################
+# require(car)
+ 
+# ##################################
+# ## examples
+# ##################################
+# y1 = arGEV(60, 0.24, c(1.004, -0.414), 6.7288, -0.079); plot(y, type = 'l')
+# T = length(y)
+# p = 2 
+ 
+ #########################################################
+ ## inverse log-gamma density for 
+ ## theta = log sig or phi1 or phi2 using jacobian method
+ ######################################################### 
+ digam <- function(x, a, b) {
+          b^a / gamma(a) * exp(-x*a - b/exp(x))        
+ }
+ a = 0.1; b = 0.01
+ curve(digam(x, a, b), -10, 10)
+ 
+ psd = 5
+ psd2 = psd^2
+ 
+ ###############################
+ ### log-posterior for GEV-AR(2)
+ ###############################
+ ll <- function(theta, x) {
+       mu    = theta[1]
+       thet1 = theta[2]
+       thet2 = theta[3]
+       delta = theta[4]
+       xi    = theta[5]
+  
+       T = length(x)
+  
+       mut = vector() 
+       for (t in 3:T) mut[t-2] = sum(theta[2:3] * x[(t-1):(t-2)])     
+       
+       ll <- sum(log(f(x[3:T], mu + mut, exp(delta), xi))) + 
+             sum(dnorm(theta[1:3], 0, psd, log = T)) + log(digam(delta, a, b)) + dunif(xi, -.4999, .4999, log = TRUE)  
+       
+ ifelse(ll != "-Inf", ll, -10000000000000000000)
+ }
+ 
+ #######################################
+ ## gradient log-posterior for GEV-AR(p)
+ #######################################
+ nll <- function(theta, x) {
+        mu    = theta[1]
+        thet1 = theta[2]
+        thet2 = theta[3]
+        sig   = exp(theta[4])
+        xi    = theta[5]
+        
+        T = length(x)
+        
+        mut = vector() 
+        for (t in (3:T)) mut[t-2] = sum(theta[2:3] * x[(t-1):(t-2)])  
+              
+	d = x[3:T]-(mu + mut)
+        z = 1 + xi*d/sig
+        D = rep(0, 5)
+        
+        if (any(z < 0) | abs(xi) > .5) { D = rep(-10000000000000000000, 5)  }
+        else {
+           w = d/sig^2
+           q = d/sig
+       	   v = 1/sig*(z^(-1)*((1+xi) - z^(-1/xi)))
+	   D[1] = sum(v) - mu/psd2
+	   D[2] = sum(v * x[2:(T-1)]) - thet1/psd2
+	   D[3] = sum(v * x[1:(T-2)]) - thet2/psd2
+	   D[4] = ( sum((1+xi)*w*z^(-1) - w*z^(-1-1/xi))*sig - (T-2) ) - a + b/sig 
+           D[5] = suppressWarnings(1/xi^(2)*sum(log(z)) - (1/xi+1)*sum(q*z^(-1)) + 1/xi*sum(q*z^(-1-1/xi)) - 1/xi^(2)*sum(log(z)*z^(-1/xi)))
+         }
+         
+ if (suppressWarnings(any(D == "NaN" | D == "Inf" | D == "-Inf"))) rep(-100000, 5)
+ else D
+ }
+ 
+ ##############################################
+ # maximum a posteriori
+ ##############################################
+# map = optim(c(0, 0, 0, 0, 0.1), ll, x = y, control = list(fnscale = -1), hessian = TRUE)
+# map = optim(rnorm(5, 0, 0.08), ll, nll, x = y, control = list(fnscale = -1), method = 'BFGS', hessian = TRUE)
+ 
+ #########################################################
+ # Fisher information or Riemannian metric G for AR-GEV(2)
+ #########################################################
+ G = function(theta, x) {
+     G = matrix(, 5, 5)
+     mu    = theta[1]
+     thet1 = theta[2]
+     thet2 = theta[3]
+     sig   = exp(theta[4])
+     sig2  = sig^2
+     xi    = theta[5]
+     
+     T = length(x)
+     
+     Sthet  = 1-sum(theta[2:3])
+     Sthet2 = 1-sum(theta[2:3]^2)
+          
+     mean.e  = -sig/xi + sig/xi * gamma(1-xi)
+     var.e   = sig2/xi^2 * (gamma(1-2*xi) - gamma(1-xi)^2)
+     mean.y  = (mean.e + mu)/Sthet
+     mean.y2 = mean.y^2
+     gam1    = (Sthet2*(Sthet*mean.y2 - (mean.e + mu)*mean.y) - var.e*thet1)/(2*thet1^2*thet2 - (1-thet2)*Sthet2)
+     gam0    = (2*thet1*thet2*gam1 + var.e)/Sthet2
+     
+     Ey1 = gam1 + mean.y2
+     Ey0 = gam0 + mean.y2
+     
+     pg = gamma(2 + xi)
+     p  = (1 + xi)^(2) * gamma(1 + 2*xi)
+     q  = pg * (psigamma(1 + xi) + 1 + 1/xi)
+  
+     G[1, 1] =  (T-2)*p/sig2 + 1/psd2
+     G[1, 2] =  (T-2)*p/sig2 * mean.y     -> G[2, 1]
+     G[1, 3] =  (T-2)*p/sig2 * mean.y     -> G[3, 1]
+     G[1, 4] = -(T-2)/(sig*xi)*(p - pg)   -> G[4, 1]
+     G[1, 5] = -(T-2)/(sig*xi)*(q - p/xi) -> G[5, 1]
+     
+     G[2, 2] =  (T-2)*p/sig2 * Ey0 + 1/psd2
+     G[2, 3] =  (T-2)*p/sig2 * Ey1                 -> G[3, 2]
+     G[2, 4] = -(T-2)/(sig*xi)*(p - pg) * mean.y   -> G[4, 2]
+     G[2, 5] = -(T-2)/(sig*xi)*(q - p/xi) * mean.y -> G[5, 2]
+     
+     G[3, 3] =  (T-2)*p/sig2 * Ey0 + 1/psd2
+     G[3, 4] = -(T-2)/(sig*xi)*(p - pg) * mean.y   -> G[4, 3]
+     G[3, 5] = -(T-2)/(sig*xi)*(q - p/xi) * mean.y -> G[5, 3]
+     
+     G[4, 4] =  (T-2)/(xi^2) * (1 - 2*pg + p) + b/sig
+     G[4, 5] = -(T-2)/(xi^2) * (1 - J + (1 - pg)/xi - q + p/xi) -> G[5, 4]
+     
+     G[5, 5] =  (T-2)/(xi^2) * ((pi^2)/6 + (1 - J + 1/xi)^2 - 2*q/xi + p/(xi^2))
+ 
+ return(G)
+ }
+  
+# G. = G(map$par, y)
+# invG = solve(G) 
+ 
+ ###########################
+ ### Hamiltonian Monte Carlo
+ ###########################
+# B = hmc(c(0, 0, 0, 1, .1), 600, 10, 1, .007, 13, diag(5), y) 
+# B = hmc(c(0, 0, 0, 1, .1), 600, 10, 1, .155, 11, G., y) 
+
+# par(mfrow=c(3,2)); for (i in 1:5) plot(B$theta[, i], type = 'l') 
+# scatterplotMatrix(B$theta, diagonal = 'histogram', nclass = 30, col = c(0, 1, 1), reg.lin = F,  smoother = F, var.labels = c(''), upper.panel = NULL)
+
+ #########################################
+ ### predictive distribution and inference
+ #########################################
+ N  = dim(B$theta)[1]
+ T = length(y) ; h = 3
+ y. = matrix(, N, h)
+ quan.est = matrix(nrow = h, ncol = 2)
+
+ y.[ ,1] = rgev(N, B$theta[ ,1] + y[T]*B$theta[, 2] + y[T-1]*B$theta[, 3], exp(B$theta[, 4]), B$theta[, 5])
+ y.[ ,2] = rgev(N, B$theta[ ,1] + y.[ ,1]*B$theta[, 2] + y[T]*B$theta[, 3], exp(B$theta[, 4]), B$theta[, 5])
+ quan.est[1, ] = quantile(y.[, 1], prob = c(0.05, 0.95))
+ quan.est[2, ] = quantile(y.[, 2], prob = c(0.05, 0.95))
+ for(t in 3:h) {
+ y.[, t] = rgev(N, B$theta[ ,1] + y.[ ,(t-1)]*B$theta[, 2] + y.[ ,(t-2)]*B$theta[, 3], B$theta[, 4], B$theta[, 5])
+ quan.est[t, ] = quantile(y.[, t], prob = c(0.05, 0.95))
+ } 
+
+ scatterplotMatrix(y., diagonal = 'histogram', nclass = 30, col = c(0, 1, 1), reg.lin = F,  smoother = F, var.labels = c(''), upper.panel = NULL)
+
+ pdf('predparex1.pdf', width = 12, height = 6) 
+ plot(NULL, xlim = c(90, 96), ylim = c(78, 85), ylab = expression(y[t]), xlab = 't', main = 'predições',type = 'l')   
+ lines(c(1:96), data[1:96], xlim = c(1:96), ylim .= c(78, 84), ylab = expression(y[t]), xlab = 't', main = 'predições',type = 'l')
+ points(c(94:96), data[94:96], pch = 16, cex = 1.5);
+ points(c(94:96), meany., pch = 4, cex = 1.5); abline(v = 93, lty = 1); abline(v = c(94:96), lty = 2)
+ points(c(94:96), modey. + m.data, pch = 4, cex = 1.5); abline(v = 93, lty = 1); abline(v = c(94:96), lty = 2)
+ axis(side = 1, at = c(94:96))
+ points(c(94:96), quan.est[, 1] + m.data, pch = '-', cex = 2.5)
+ points(c(94:96), quan.est[, 2] + m.data, pch = '-', cex = 2.5)
+ dev.off()
+ 
+ modey. = apply(y., 2, mode)
+ meany. = apply(y., 2, mean)
+ mediany. = apply(y., 2, median)
+ vary.  = apply(y., 2, var)
