@@ -73,7 +73,7 @@
              D[4] = suppressWarnings(1/xi^(2)*sum(log(z)) - (1/xi+1)*sum(q*z^(-1)) + 1/xi*sum(q*z^(-1-1/xi)) - 1/xi^(2)*sum(log(z)*z^(-1/xi)))
         }
          
- if (suppressWarnings(any(z < 0 | D == "NaN" | D == "Inf" | D == "-Inf"))) rep(-100000, 4)
+ if (suppressWarnings(D == "NaN" | D == "Inf" | D == "-Inf"))) rep(-10000000000000000000, 4)
  else D
  }
 
